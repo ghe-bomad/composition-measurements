@@ -1,0 +1,8 @@
+{
+    "last_shutdown": {
+        "time": "2026-08-17 16:48:28",
+        "reason": "Battery reached critical shutdown threshold.",
+        "battery_percent": 69.5,
+        "battery_voltage": 4.204
+    }
+}

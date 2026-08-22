@@ -1,0 +1,9 @@
+{
+    "battery_percent": 76.2,
+    "battery_voltage": 3.936,
+    "warning": false,
+    "shutdown_pending": false,
+    "message": "UPS battery status normal.",
+    "power_loss_detection": "unavailable_gpio_conflict",
+    "last_update": "2026-08-19 19:10:08"
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=Drager Gas Monitoring System
+After=network.target
+
+[Service]
+Type=simple
+User=valvescontroller
+WorkingDirectory=/home/valvescontroller/Desktop/Drager_XAM8000_valves
+
+ExecStart=/home/valvescontroller/Desktop/Drager_XAM8000_valves/.venv/bin/python /home/valvescontroller/Desktop/Drager_XAM8000_valves/main.py
+
+Environment=PYTHONUNBUFFERED=1
+
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

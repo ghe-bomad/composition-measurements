@@ -1,0 +1,13 @@
+[project]
+name = "h2s-rpi"
+version = "0.1.0"
+description = "Read the Mzuzu H2S sensor PCB (LMP91002 + ADS1115) over I2C on a Raspberry Pi 5"
+requires-python = ">=3.9"
+dependencies = ["smbus2>=0.4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]

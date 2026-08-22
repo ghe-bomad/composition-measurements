@@ -1,0 +1,28 @@
+Timestamp,Event,Details
+2026-08-17 16:15:13,BOOT,System started. No previous clean shutdown timestamp was available.
+2026-08-17 16:24:04,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 16:24:26,BOOT,System started. Offline duration: 22 seconds.
+2026-08-17 16:47:05,UPS_SHUTDOWN,Safe shutdown triggered by UPS. Battery: 67.9 %. Voltage: 4.164 V.
+2026-08-17 16:47:05,SHUTDOWN,Safe shutdown triggered by UPS. Battery: 67.9 %. Voltage: 4.164 V.
+2026-08-17 16:47:09,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 16:48:14,BOOT,System started. Offline duration: 65 seconds.
+2026-08-17 16:48:28,UPS_SHUTDOWN,Safe shutdown triggered by UPS. Battery: 69.5 %. Voltage: 4.204 V.
+2026-08-17 16:48:28,SHUTDOWN,Safe shutdown triggered by UPS. Battery: 69.5 %. Voltage: 4.204 V.
+2026-08-17 16:48:33,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 16:52:13,BOOT,System started. Offline duration: 220 seconds.
+2026-08-17 16:55:36,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 16:57:12,BOOT,System started. Offline duration: 96 seconds.
+2026-08-17 17:06:11,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 17:06:48,BOOT,System started. Offline duration: 37 seconds.
+2026-08-17 17:09:07,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 17:09:13,BOOT,System started. Offline duration: 6 seconds.
+2026-08-17 17:17:02,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 17:17:08,BOOT,System started. Offline duration: 6 seconds.
+2026-08-17 19:32:12,BOOT,System started. Offline duration: 8110 seconds.
+2026-08-17 19:32:12,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 19:55:06,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 19:55:12,BOOT,System started. Offline duration: 6 seconds.
+2026-08-17 19:56:10,SHUTDOWN,Operating system shutdown or reboot.
+2026-08-17 19:56:18,BOOT,System started. Offline duration: 8 seconds.
+2026-08-17 20:04:01,BOOT,System started. Offline duration: 471 seconds.
+2026-08-17 20:04:02,BOOT,System started. Offline duration: 472 seconds.

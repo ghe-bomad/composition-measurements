@@ -1,0 +1,11 @@
+{
+    "measurement_valves": [1, 2, 3, 4, 5],
+    "flush_valve": 6,
+    "pump_start_delay_seconds": 2,
+    "flush_seconds": 10,
+    "measurement_duration_seconds": 10,
+    "measurement_interval_seconds": 2,
+    "cycle_pause_seconds": 0,
+    "continuous_mode": true,
+    "pump_flow": 350
+}

@@ -1,0 +1,12 @@
+{
+    "running": false,
+    "mode": "idle",
+    "current_valve": null,
+    "cycle": 0,
+    "pump": false,
+    "message": "System was safely stopped.",
+    "measurements": [],
+    "mzuzu": null,
+    "last_measurement_time": null,
+    "last_update": "2026-08-17 19:53:44"
+}
