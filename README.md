@@ -234,110 +234,7 @@ It contains installed Python packages and should not be edited manually.
 
 ---
 
-## 3. System architecture
-
-The following diagram shows which part starts or uses which other part.
-
-```text
-                         ┌─────────────────────────────┐
-                         │        dashboard.py         │
-                         │      Streamlit web UI       │
-                         └──────────────┬──────────────┘
-                                        │
-                                        │ calls
-                                        ▼
-                         services/service_controller.py
-                                        │
-                                        │ starts/stops
-                                        ▼
-                              gasmonitor.service
-                                        │
-                                        │ launches
-                                        ▼
-                                   main.py
-                                        │
-          ┌─────────────────────────────┼─────────────────────────────┐
-          │                             │                             │
-          ▼                             ▼                             ▼
- hardware/valves.py          hardware/drager_control.py    hardware/h2s_control.py
-          │                             │                             │
-          ▼                             ▼                             ▼
- hardware/PiRelay6.py        drager_xam_8000/              h2s-rpi/
-          │
-          ▼
-     Gas valves
-
-main.py
-  │
-  ├── writes measurements ──► csv_data/csv_storage.py ──► data/
-  │
-  └── writes live status ───► system_logs/status_storage.py
-                                      │
-                                      ▼
-                              system_logs/status.json
-                                      │
-                                      ▼
-                                dashboard.py
-
-
-ups-monitor.service
-        │
-        │ launches
-        ▼
-hardware/ups_monitor.py
-        │
-        ├── reads battery using hardware/ups_control.py
-        ├── writes system_logs/ups_status.json
-        ├── writes system_logs/ups_history.json
-        ├── writes UPS shutdown events
-        └── stops gasmonitor.service before system poweroff
-
-
-gasmonitor-github-backup.timer
-        │
-        │ triggers every 12 hours
-        ▼
-gasmonitor-github-backup.service
-        │
-        │ launches
-        ▼
-github/github_backup.py
-        │
-        ├── copies data/
-        └── copies system_logs/system_events.csv
-                 │
-                 ▼
-      gasmonitor-data-backup repository
-                 │
-                 ▼
-               GitHub
-```
-
-### What does the arrow from `gasmonitor.service` to `main.py` mean?
-
-The arrow means that `gasmonitor.service` **starts `main.py` as a Linux-managed process**.
-
-It is not a data flow.
-
-The service is a wrapper around the Python measurement program. Instead of the dashboard running:
-
-```bash
-python3 main.py
-```
-
-directly, the dashboard tells Linux:
-
-```bash
-systemctl start gasmonitor.service
-```
-
-Linux then launches `main.py`.
-
-This approach is used because it makes the measurement process easier to manage and prevents accidental duplicate measurement processes.
-
----
-
-## 4. `main.py` — measurement engine
+## 3. `main.py` — measurement engine
 
 `main.py` is the core measurement program.
 
@@ -474,7 +371,7 @@ This separation is intentional and makes the measurement process independent fro
 
 ---
 
-## 5. `dashboard.py` — operator interface
+## 4. `dashboard.py` — operator interface
 
 `dashboard.py` is the main user interface.
 
@@ -622,7 +519,7 @@ Using `systemd` ensures there is one controlled measurement service with clear p
 
 ---
 
-## 6. Measurement cycle
+## 5. Measurement cycle
 
 A typical measurement cycle is:
 
@@ -672,7 +569,7 @@ Valve 6 is also recorded. This allows the operator to check whether the flushing
 
 ---
 
-## 7. Data storage
+## 6. Data storage
 
 Measurement data is stored below:
 
@@ -713,7 +610,7 @@ If the date changes while measurement is active, the storage layer switches to t
 
 ---
 
-## 8. Settings
+## 7. Settings
 
 The settings system uses three files.
 
@@ -789,7 +686,7 @@ For this reason, the dashboard disables the settings controls while measurement 
 
 ---
 
-## 9. Logs and runtime status
+## 8. Logs and runtime status
 
 System information is stored in:
 
@@ -860,7 +757,7 @@ Stores information about the latest boot/shutdown state.
 
 ---
 
-## 10. GitHub backup
+## 9. GitHub backup
 
 The GitHub backup is intentionally limited to:
 
@@ -887,7 +784,7 @@ The backup is scheduled every 12 hours.
 
 ---
 
-## 11. What are the systemd services?
+## 10. What are the systemd services?
 
 `systemd` is the Linux service manager used by Raspberry Pi OS.
 
@@ -1010,7 +907,7 @@ Write a shutdown/reboot event before Linux shuts down.
 
 ---
 
-## 12. Useful commands
+## 11. Useful commands
 
 All commands below are intended to be run in a Raspberry Pi terminal.
 
@@ -1190,7 +1087,7 @@ Expected addresses:
 
 ---
 
-## 13. Development checks
+## 12. Development checks
 
 These checks are useful after Python files are edited or moved.
 
@@ -1265,7 +1162,7 @@ If an `ImportError` or `ModuleNotFoundError` appears, one of the module paths is
 
 ---
 
-## 14. Troubleshooting
+## 13. Troubleshooting
 
 ### Error 121 — `Remote I/O error`
 
@@ -1388,7 +1285,7 @@ The `last_update` field should change regularly while the UPS monitor is running
 
 ---
 
-## 15. Safe shutdown behaviour
+## 14. Safe shutdown behaviour
 
 Safe shutdown is important because the project controls physical valves and continuously writes measurement files.
 
@@ -1409,36 +1306,3 @@ If the UPS reaches the critical battery threshold:
 4. it records the UPS shutdown event,
 5. it requests Raspberry Pi poweroff.
 
----
-
-## 16. Summary of the main data flow
-
-```text
-Physical gas line
-      ↓
-Valve selected by PiRelay
-      ↓
-Dräger X-am 8000 + Mzuzu H₂S sensor
-      ↓
-main.py
-      ├──► CSV measurement data
-      │        ↓
-      │      data/
-      │        ├──► dashboard downloads
-      │        └──► GitHub backup
-      │
-      └──► live status
-               ↓
-       system_logs/status.json
-               ↓
-           dashboard.py
-
-X1205 UPS
-      ↓
-hardware/ups_monitor.py
-      ├──► ups_status.json ──► dashboard
-      ├──► ups_history.json ─► dashboard
-      └──► system_events.csv ─► dashboard + GitHub backup
-```
-
-This separation allows the measurement system, dashboard, UPS supervision, data storage and backup to operate as independent but connected parts of one system.
