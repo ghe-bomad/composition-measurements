@@ -1,5 +1,21 @@
 # Dräger X-am 8000 Valve Monitoring System
 
+## Contents
+
+- [1. Project overview](#1-project-overview)
+- [2. Project structure](#2-project-structure)
+- [3. main.py — measurement engine](#3-mainpy--measurement-engine)
+- [Hardware](#hardware)
+- [CSV data](#csv_data)
+- [Settings](#settings)
+- [System logs](#system_logs)
+- [GitHub backup](#github)
+- [Services](#services)
+- [Data storage](#data)
+- [Dräger X-am library](#drager_xam_8000)
+- [H₂S sensor library](#h2s-rpi)
+- [Streamlit config](#streamlit)
+
 ## 1. Project overview
 
 This project is a Raspberry Pi 5 based gas-monitoring and valve-control system.
@@ -244,20 +260,10 @@ It is responsible for the complete physical measurement sequence.
 
 When started, `main.py`:
 
-1. loads the current measurement configuration,
-2. creates the valve controller,
-3. connects to the Dräger X-am 8000,
-4. connects to the additional H₂S sensor,
-5. starts the Dräger pump,
-6. waits for the configured pump startup delay,
-7. opens the configured measurement valves one after another,
-8. reads Dräger gas values,
-9. reads the Mzuzu H₂S value and sensor temperature,
-10. writes every reading to CSV,
-11. updates the live dashboard status,
-12. flushes the gas path through Valve 6,
-13. repeats the sequence according to the selected settings,
-14. safely shuts down all hardware if the service is stopped or an error occurs.
+- loads the current measurement settings,
+- controls the valve sequence and sensor readings,
+- stores each measurement in CSV files,
+- updates the dashboard status and handles shutdowns safely if the service stops or an error occurs.
 
 ### Input files and modules used by `main.py`
 
