@@ -2,395 +2,99 @@
 
 ## Contents
 
-1. [Purpose of this document](#1-purpose-of-this-document)
-2. [System architecture](#2-system-architecture)
-3. [main.py](#3-mainpy)
-4. [dashboard.py](#4-dashboardpy)
-5. [hardware](#5-hardware)
-6. [csv_data](#6-csv_data)
-7. [settings](#7-settings)
-8. [system_logs](#8-system_logs)
-9. [github](#9-github)
-10. [services and systemd](#10-services-and-systemd)
-11. [data](#11-data)
-12. [External libraries](#12-external-libraries)
-13. [Measurement flow](#13-measurement-flow)
-14. [Live status and file exchange](#14-live-status-and-file-exchange)
+1. [main.py](#1-mainpy)
+2. [dashboard.py](#2-dashboardpy)
+3. [hardware](#3-hardware)
+4. [csv_data](#4-csv_data)
+5. [settings](#5-settings)
+6. [system_logs](#6-system_logs)
+7. [github](#7-github)
+8. [services and systemd](#8-services-and-systemd)
+9. [data](#9-data)
+10. [External libraries](#10-external-libraries)
+11. [How a measurement run works](#11-how-a-measurement-run-works)
+12. [How the dashboard gets its information](#12-how-the-dashboard-gets-its-information)
+13. [Battery monitoring and safe shutdown](#13-battery-monitoring-and-safe-shutdown)
+14. [Automatic GitHub backup](#14-automatic-github-backup)
 15. [Useful commands](#15-useful-commands)
-16. [Development checks](#16-development-checks)
+16. [Checks after changing the code](#16-checks-after-changing-the-code)
 17. [Troubleshooting](#17-troubleshooting)
-18. [Safe shutdown behaviour](#18-safe-shutdown-behaviour)
-19. [Notes for future changes](#19-notes-for-future-changes)
 
 ---
 
-## 1. Purpose of this document
+## 1. `main.py`
 
-This file contains the detailed technical documentation for the gas-monitoring project.
+`main.py` is the central measurement program. It contains the sequence that is followed whenever a measurement is started. It does not contain all hardware details itself. Instead, it uses the smaller modules in the other folders. This keeps the measurement sequence readable and makes it easier to change one part of the system without having to rewrite everything else.
 
-The main `README.md` gives a short overview of the system. This document explains how the individual Python files, folders, services and data files work together.
+When `main.py` starts, it first loads the measurement settings from `settings/config.json`. It does not read the JSON file directly. The file `settings/config_storage.py` is responsible for loading and checking the settings. This means that both `main.py` and the dashboard use the same configuration handling.
 
-It is intended for someone who opens the repository for the first time and needs enough context to understand or modify the code.
+The settings tell `main.py`, for example, which valves should be measured, which valve is used for flushing, how long a valve should be measured, how often a new sensor reading should be taken, how long the system should flush and whether the measurement should continue automatically with another cycle.
 
----
+After loading the settings, `main.py` prepares the hardware. Valve control is handled through `hardware/valves.py`. The Dräger is handled through `hardware/drager_control.py`, and the additional H₂S sensor is handled through `hardware/h2s_control.py`. `main.py` therefore only needs to tell these modules what it wants to do, for example open a valve, start the pump or read the current sensor values.
 
-## 2. System architecture
+The Dräger communication code in `hardware/drager_control.py` uses the external library in `drager_xam_8000/`. The additional H₂S sensor code in `hardware/h2s_control.py` uses the external package in `h2s-rpi/`. These external folders contain the lower-level communication code, while the files in `hardware/` provide a simpler interface for the rest of this project.
 
-The project is split into several independent parts.
+Once the hardware is ready, the Dräger pump is started. The system waits for the configured startup delay before the first valve is opened. This gives the pump time to establish the gas flow.
 
-```text
-dashboard.py
-    │
-    ├── reads current status
-    ├── reads recorded data
-    ├── reads settings
-    └── starts/stops measurement
-               │
-               ▼
-services/service_controller.py
-               │
-               ▼
-       gasmonitor.service
-               │
-               ▼
-            main.py
-               │
-      ┌────────┼────────┐
-      │        │        │
-      ▼        ▼        ▼
-   valves    Dräger    H₂S
-      │        │        │
-      ▼        ▼        ▼
- PiRelay 6   X-am     Mzuzu
+For each measurement valve, `main.py` opens the valve and repeatedly reads the sensors for the configured measurement duration. Each reading combines the Dräger measurements with the additional H₂S value and H₂S sensor temperature. The complete result is passed to `csv_data/csv_storage.py`, which writes it to a CSV file in the `data/` folder.
 
-main.py
-   ├──► csv_data/csv_storage.py ──► data/
-   └──► system_logs/status_storage.py ──► status.json
+At the same time, `main.py` updates `system_logs/status.json` through `system_logs/status_storage.py`. This file contains the current state of the measurement system and the most recent sensor values. The dashboard reads this file to show live information. The dashboard does not communicate directly with the hardware.
 
-hardware/ups_monitor.py
-   ├──► hardware/ups_control.py
-   ├──► ups_status.json
-   ├──► ups_history.json
-   └──► system_events.csv
+After a measurement valve is finished, the valve is closed and Valve 6 is opened for flushing. Valve 6 is also measured and written to CSV. Recording the flush valve makes it possible to check later whether the gas concentrations actually decreased during the flushing period.
 
-github/github_backup.py
-   ├──► data/
-   └──► system_events.csv
-```
+After flushing, the system continues with the next configured measurement valve. If continuous mode is enabled, the whole sequence starts again after the last valve.
 
-The design keeps hardware access out of the dashboard and keeps the user interface out of the measurement loop.
+`main.py` also contains the cleanup that is needed when the measurement is stopped or when an error occurs. The valves should be closed, the Dräger pump should be stopped, the sensor connections should be closed and the CSV file should be left in a valid state. This is important because the program controls physical hardware and may run unattended for long periods.
+
+`main.py` is normally not started manually. It is started by `gasmonitor.service`. The dashboard tells Linux to start or stop this service, and the service then starts or stops `main.py`. This is explained in more detail in the section about `services/` and `systemd`.
 
 ---
 
-## 3. `main.py`
+## 2. `dashboard.py`
 
-### Role
+`dashboard.py` contains the Streamlit web interface. It is the part of the project that the user normally works with.
 
-`main.py` is the measurement engine.
+The dashboard is intentionally separated from the measurement process. It does not open valves, read the Dräger or access the H₂S sensor directly. Instead, it shows information that has already been written to files by the measurement and UPS processes.
 
-It contains the sequence that controls valves, starts the Dräger pump, reads sensors, stores measurements and performs cleanup.
+The main measurement status comes from `system_logs/status.json`. While a measurement is running, `main.py` keeps this file updated. It contains information such as the current valve, the current cycle, the pump state, the latest Dräger values, the latest Mzuzu H₂S value, the H₂S sensor temperature and a status message. The dashboard reads this file repeatedly and uses it to update the live display.
 
-It is normally launched by:
+The dashboard also reads the current measurement settings. These are stored in `settings/config.json`. The functions in `settings/config_storage.py` are used to load and save them. When the measurement is stopped, the user can change the settings in the dashboard. The new values are then written to `config.json` and will be used the next time `main.py` starts.
 
-```text
-gasmonitor.service
-```
+The file `settings/default_config.json` is used when the user selects Restore Defaults. It contains the standard values that should be restored. Keeping the default values in a separate file means that changing the active settings does not overwrite the original reference settings.
 
-rather than by the dashboard directly.
+The dashboard reads the recorded measurement files from `data/`. These CSV files are used for the download section. Depending on the selected filter, the dashboard can include all recorded measurements, a recent time range or a custom date range. It can provide a combined download or individual source files.
 
-### Inputs
+Battery information is read from `system_logs/ups_status.json`. This file is updated by `hardware/ups_monitor.py`, not by the dashboard. It contains the current battery percentage, voltage and warning state.
 
-#### Current configuration
+The file `system_logs/ups_history.json` stores information about the most recent UPS-triggered shutdown. The dashboard uses this so that the last battery-related shutdown can still be seen after the Raspberry Pi has restarted.
 
-```text
-settings/config.json
-```
+The file `system_logs/system_state.json` contains information about system boot and shutdown state. The persistent event history is stored in `system_logs/system_events.csv`. The dashboard displays this event log and also makes it available for download.
 
-Loaded through:
+The START and STOP buttons do not run `main.py` directly. They call functions in `services/service_controller.py`. That file uses `systemctl` to start and stop `gasmonitor.service`. This avoids having several measurement processes running at the same time and keeps the measurement process independent from Streamlit.
 
-```text
-settings/config_storage.py
-```
-
-The configuration contains values such as:
-
-```text
-measurement_valves
-flush_valve
-pump_start_delay_seconds
-flush_seconds
-measurement_duration_seconds
-measurement_interval_seconds
-cycle_pause_seconds
-continuous_mode
-pump_flow
-```
-
-#### Valve interface
-
-```text
-hardware/valves.py
-```
-
-#### Dräger interface
-
-```text
-hardware/drager_control.py
-```
-
-#### Additional H₂S interface
-
-```text
-hardware/h2s_control.py
-```
-
-### Outputs
-
-#### Measurement data
-
-Written through:
-
-```text
-csv_data/csv_storage.py
-```
-
-to:
-
-```text
-data/
-```
-
-#### Live status
-
-Written through:
-
-```text
-system_logs/status_storage.py
-```
-
-to:
-
-```text
-system_logs/status.json
-```
-
-### Main sequence
-
-At startup, `main.py`:
-
-1. loads the current configuration,
-2. initializes controllers,
-3. closes all valves,
-4. connects to the Dräger,
-5. connects to the H₂S sensor,
-6. starts the pump,
-7. waits for the configured pump startup delay.
-
-It then loops through the configured measurement valves.
-
-For each valve, it:
-
-1. opens the selected valve,
-2. reads the Dräger measurements,
-3. reads the additional H₂S sensor,
-4. writes a combined row to CSV,
-5. updates `status.json`,
-6. repeats the measurement at the configured interval,
-7. closes the valve after the configured duration.
-
-After each measurement valve, Valve 6 is opened for flushing.
-
-Valve 6 measurements are stored as well.
-
-### Why `main.py` does not contain low-level hardware code
-
-Direct GPIO, serial and I²C details are kept in `hardware/`.
-
-That makes the measurement sequence easier to read and allows individual hardware interfaces to be changed without rewriting the whole measurement loop.
-
-### Cleanup
-
-When the process stops, it should leave the physical system in a safe state.
-
-Cleanup includes:
-
-- closing all valves,
-- stopping the Dräger pump,
-- disconnecting the Dräger,
-- disconnecting the H₂S sensor,
-- closing/flushing the CSV file,
-- updating the status file.
+The dashboard itself is normally started by `gasmonitor-dashboard.service`. This means the web interface can become available automatically after the Raspberry Pi boots, even though the actual measurement still has to be started manually.
 
 ---
 
-## 4. `dashboard.py`
+## 3. `hardware/`
 
-### Role
+The `hardware/` folder contains the project-specific code that communicates with physical hardware. The purpose of this folder is to keep device-specific code separate from the main measurement sequence.
 
-`dashboard.py` is the Streamlit web interface.
+### `hardware/valves.py`
 
-It is the main user-facing part of the system.
+`valves.py` is the interface used by `main.py` to control the gas valves.
 
-The dashboard does not directly control the valves or sensors. It reads files produced by other parts of the project and controls the measurement process through `systemd`.
+`main.py` works with valve numbers such as Valve 1 or Valve 6. It should not need to know which Raspberry Pi pin belongs to which relay. `valves.py` handles this connection between logical valve numbers and the relay board.
 
-### Main functions
+It uses `hardware/PiRelay6.py` for the actual relay switching.
 
-The dashboard provides:
+This separation is useful because the measurement sequence can simply request that a valve is opened or closed. The low-level GPIO details stay in the relay code.
 
-- START and STOP controls,
-- current system status,
-- active valve,
-- pump state,
-- current cycle,
-- latest gas values,
-- current settings,
-- Restore Defaults,
-- CSV download,
-- date-range filtering,
-- battery status,
-- system state,
-- UPS shutdown information,
-- system event log download.
+### `hardware/PiRelay6.py`
 
-### Inputs
+`PiRelay6.py` is the low-level driver for the SB Components PiRelay 6-channel board.
 
-#### Current measurement status
-
-```text
-system_logs/status.json
-```
-
-Used for:
-
-- current valve,
-- running/idle state,
-- pump state,
-- cycle,
-- latest Dräger values,
-- latest Mzuzu values,
-- status message,
-- timestamps.
-
-#### Current settings
-
-```text
-settings/config.json
-```
-
-Accessed through:
-
-```text
-settings/config_storage.py
-```
-
-#### Default settings
-
-```text
-settings/default_config.json
-```
-
-Used when the operator selects Restore Defaults.
-
-#### UPS status
-
-```text
-system_logs/ups_status.json
-```
-
-Used for battery percentage, voltage, warning state and shutdown state.
-
-#### UPS history
-
-```text
-system_logs/ups_history.json
-```
-
-Used to show information about the most recent UPS-triggered shutdown.
-
-#### System state
-
-```text
-system_logs/system_state.json
-```
-
-Used for boot/shutdown information.
-
-#### System event log
-
-```text
-system_logs/system_events.csv
-```
-
-Displayed in the Battery & System Status section and available for download.
-
-#### Measurement data
-
-```text
-data/
-```
-
-The dashboard scans CSV files below this directory and can create filtered or consolidated downloads.
-
-### Service control
-
-The dashboard uses:
-
-```text
-services/service_controller.py
-```
-
-to start and stop:
-
-```text
-gasmonitor.service
-```
-
-This prevents the dashboard from launching duplicate measurement processes.
-
-### Settings while measurement is running
-
-The dashboard disables settings while the measurement service is active.
-
-This is intentional. `main.py` loads settings when it starts, so changing the configuration during a running cycle could make the displayed settings differ from the values currently being used.
-
----
-
-## 5. `hardware/`
-
-The `hardware/` folder contains the project-specific hardware interfaces.
-
-```text
-hardware/
-├── __init__.py
-├── valves.py
-├── PiRelay6.py
-├── drager_control.py
-├── h2s_control.py
-├── ups_control.py
-└── ups_monitor.py
-```
-
-### `valves.py`
-
-Provides the project-level valve interface. It converts valve numbers into relay actions and provides functions for opening one valve, closing one valve and closing all valves.
-
-Used by:
-
-```text
-main.py
-```
-
-Uses:
-
-```text
-hardware/PiRelay6.py
-```
-
-### `PiRelay6.py`
-
-Low-level driver for the SB Components PiRelay 6-channel board.
-
-Current physical pin mapping:
+The relay board connects the Raspberry Pi GPIO pins to the six gas valves. The current mapping uses physical Raspberry Pi header pins:
 
 ```text
 Relay 1 → physical pin 29 → GPIO5
@@ -401,84 +105,56 @@ Relay 5 → physical pin 37 → GPIO26
 Relay 6 → physical pin 40 → GPIO21
 ```
 
-This file is used by `hardware/valves.py`.
+This file is normally used through `hardware/valves.py` rather than directly from `main.py`.
 
-GPIO6 is already occupied by Relay 2 in this design.
+One important detail is that GPIO6 is already used by Relay 2. Another device should therefore not use GPIO6 at the same time.
 
-### `drager_control.py`
+### `hardware/drager_control.py`
 
-Project-specific wrapper for the Dräger library.
+`drager_control.py` is the project-specific interface to the Dräger X-am 8000.
 
-It provides a smaller interface for connecting, disconnecting, pump control and reading gas measurements.
+The actual Dräger communication is implemented in the external `drager_xam_8000/` library. `drager_control.py` sits between that library and `main.py`.
 
-Used by:
+It provides the functions that the measurement program needs, such as connecting to the device, disconnecting, starting and stopping the pump and reading the current gas values.
 
-```text
-main.py
-```
+This wrapper is useful because `main.py` does not need to know how the Dräger protocol works internally. If the external Dräger library changes later, most of the necessary changes should remain inside `drager_control.py`.
 
-Uses:
+### `hardware/h2s_control.py`
 
-```text
-drager_xam_8000/
-```
+`h2s_control.py` connects the main project to the separate Mzuzu H₂S sensor.
 
-### `h2s_control.py`
-
-Project-specific wrapper for the additional H₂S sensor.
-
-The sensor PCB uses:
+The sensor board uses two I²C devices:
 
 ```text
-0x48  LMP91002
-0x49  ADS1115
+0x48  LMP91002 potentiostat
+0x49  ADS1115 ADC
 ```
 
-The wrapper opens the I²C bus, configures the sensor and returns values in a form that `main.py` can use.
+The lower-level sensor package is stored in `h2s-rpi/`. `h2s_control.py` opens the I²C connection, creates the sensor object, reads the H₂S concentration and sensor temperature and returns the values in a form that `main.py` can use.
 
-Used by:
+This keeps sensor-specific setup and library imports out of `main.py`.
 
-```text
-main.py
-```
+### `hardware/ups_control.py`
 
-Uses:
+`ups_control.py` reads battery information from the X1205 UPS.
 
-```text
-h2s-rpi/
-```
-
-### `ups_control.py`
-
-Low-level interface for X1205 battery information.
-
-The UPS fuel-gauge interface appears at:
+The X1205 fuel-gauge interface is available on I²C address:
 
 ```text
 0x36
 ```
 
-It provides battery percentage and voltage.
+The file contains the low-level code required to read values such as battery percentage and battery voltage.
 
-Used by:
+It is mainly used by `hardware/ups_monitor.py`.
 
-```text
-hardware/ups_monitor.py
-```
+### `hardware/ups_monitor.py`
 
-### `ups_monitor.py`
+`ups_monitor.py` is a separate long-running process that monitors the UPS.
 
-Long-running battery supervisor.
+It reads the battery values from `ups_control.py` at regular intervals and writes the current result to `system_logs/ups_status.json`. This is the file the dashboard reads.
 
-It reads battery information, writes current UPS status, checks warning/shutdown thresholds, waits for consecutive critical readings, stops `gasmonitor.service`, stores UPS shutdown information and requests Raspberry Pi poweroff.
-
-Started by:
-
-```text
-ups-monitor.service
-```
-
-Current production thresholds are approximately:
+The monitor also checks whether the battery has reached the warning or shutdown limits. The current production settings are approximately:
 
 ```text
 Warning percentage: 25 %
@@ -487,29 +163,29 @@ Warning voltage: 3.40 V
 Shutdown voltage: 3.25 V
 ```
 
-Temporary test thresholds should not be left enabled in normal operation.
+The shutdown is not triggered by a single low reading. Several consecutive critical readings are required first. This reduces the risk of shutting down because of one temporary measurement fluctuation.
+
+If a shutdown is necessary, `ups_monitor.py` first stops `gasmonitor.service`. This gives `main.py` time to close valves, stop the pump and finish writing data. After the measurement service has stopped, the UPS shutdown is recorded and the Raspberry Pi is powered off.
+
+`ups_monitor.py` is started by `ups-monitor.service` and runs independently from the measurement process. Battery monitoring therefore continues even when no measurement is active.
 
 ---
 
-## 6. `csv_data/`
+## 4. `csv_data/`
+
+The `csv_data/` folder contains the code used to store measurement data.
+
+The main file is:
 
 ```text
-csv_data/
-├── __init__.py
-└── csv_storage.py
+csv_data/csv_storage.py
 ```
 
-### `csv_storage.py`
+`main.py` sends every complete sensor reading to this module. `csv_storage.py` is responsible for selecting the correct folder, creating a CSV file and writing the measurement row.
 
-Responsible for persistent measurement storage.
+A measurement row contains the timestamp, the active valve number, the Dräger gas values, the additional H₂S reading and the H₂S sensor temperature.
 
-Used by:
-
-```text
-main.py
-```
-
-Typical stored columns:
+Typical columns are:
 
 ```text
 Timestamp
@@ -524,307 +200,274 @@ H2S_Mzuzu
 H2S_Temperature
 ```
 
-Files are stored below:
+The files are stored below:
 
 ```text
 data/YYYY-MM-DD/
 ```
 
-The file is flushed after writes. This means measurements are already on disk while the system is still running.
+The measurements are written continuously. They are not held in memory until the measurement is stopped. After a row is written, the file is flushed so that the data is already present on disk.
 
-If the date changes during a measurement, storage switches to a new daily file/location.
+This is important for long unattended runs. If the process stops unexpectedly, most of the previously recorded data is still available.
 
-The stored files are later used by:
+When the date changes during a running measurement, the storage code switches to the folder for the new day and continues writing there.
 
-```text
-dashboard.py
-github/github_backup.py
-```
+The CSV files are later read by `dashboard.py` for downloads and copied by `github/github_backup.py` for the automatic data backup.
 
 ---
 
-## 7. `settings/`
+## 5. `settings/`
 
-```text
-settings/
-├── __init__.py
-├── config.json
-├── default_config.json
-└── config_storage.py
-```
+The `settings/` folder contains the measurement configuration.
 
-### `config.json`
+It uses three files because they have different purposes.
 
-Contains the current active settings. These are the values used when the next measurement process starts.
+### `settings/config.json`
 
-### `default_config.json`
+`config.json` contains the settings that are currently selected by the user.
 
-Contains the reference/default values.
+Examples are the list of measurement valves, the flush valve, measurement duration, measurement interval, flush time, pump startup delay, cycle pause, continuous mode and pump flow.
 
-It is kept separate so the standard settings remain available after the operator changes the active configuration.
+When a measurement is started, `main.py` loads these values and uses them for that run.
 
-The Restore Defaults function uses this file.
+When the user changes a setting in the dashboard, the new value is saved to this file.
 
-### `config_storage.py`
+### `settings/default_config.json`
 
-Contains shared configuration functions, for example:
+`default_config.json` contains the standard values for the system.
 
-```text
-load_config()
-save_config()
-reset_config_to_defaults()
-```
+These are kept separately from the current settings so that the original reference values are not lost when the user changes `config.json`.
 
-Used by:
+When Restore Defaults is selected in the dashboard, the values from `default_config.json` are used to rebuild the active configuration.
 
-```text
-main.py
-dashboard.py
-```
+In simple terms:
 
-The separate storage module prevents both files from implementing their own JSON handling.
+- `config.json` is what the system should use now.
+- `default_config.json` is the reference configuration that can be restored.
+
+### `settings/config_storage.py`
+
+`config_storage.py` contains the Python functions that read and write both JSON files.
+
+It is used by `main.py` and `dashboard.py`.
+
+Having one shared module for configuration handling avoids having one implementation in the dashboard and another implementation in the measurement code. It also gives one place to handle missing values, default values and safe file writing.
+
+The dashboard disables the settings controls while a measurement is active. This is done because `main.py` loads its settings when it starts. Changing the file in the middle of a cycle would not necessarily change the values that the running process is already using.
 
 ---
 
-## 8. `system_logs/`
+## 6. `system_logs/`
+
+The `system_logs/` folder contains two kinds of information: current system state and historical events.
+
+Some files are updated regularly and describe what is happening right now. Other files keep a history that is useful after a restart or shutdown.
+
+### `system_logs/status_storage.py`
+
+`status_storage.py` is used by `main.py` to update the current measurement status.
+
+Instead of `main.py` writing JSON by itself, the status-writing logic is kept in this file.
+
+It writes to:
 
 ```text
-system_logs/
-├── __init__.py
-├── status_storage.py
-├── status.json
-├── system_logger.py
-├── system_events.csv
-├── system_state.json
-├── log_shutdown.py
-├── ups_status.json
-└── ups_history.json
+system_logs/status.json
 ```
 
-### `status_storage.py`
+### `system_logs/status.json`
 
-Writes live measurement information to `system_logs/status.json`.
+`status.json` contains the current state of the measurement process.
 
-Used by `main.py` and read by `dashboard.py`.
+Typical information includes the active valve, pump state, current cycle, current mode, latest sensor measurements, the latest H₂S value and a status message.
 
-### `status.json`
+The dashboard reads this file to display live information.
 
-Live measurement state. It is not a historical measurement file.
+This file is not a measurement history. It represents the latest known state and is overwritten as the system runs.
 
-Typical content includes current valve, pump state, cycle, status message, latest sensor values and update time.
+### `system_logs/system_logger.py`
 
-### `system_logger.py`
+`system_logger.py` contains the functions used to write system events.
 
-Handles persistent system events and related system-state information.
+These events include boot, shutdown and UPS-related shutdown information.
 
-### `system_events.csv`
-
-Persistent chronological system event log.
-
-Used by:
+The persistent events are written to:
 
 ```text
-dashboard.py
-github/github_backup.py
+system_logs/system_events.csv
 ```
 
-This is the only file from `system_logs/` included in the automatic GitHub data backup.
+### `system_logs/system_events.csv`
 
-### `system_state.json`
+This file is the persistent event history.
 
-Stores the latest known system lifecycle state, such as last boot and last shutdown information.
+Unlike `status.json`, old entries remain in the file.
 
-Read by:
+It is used by the dashboard and is also included in the automatic GitHub data backup.
 
-```text
-dashboard.py
-```
+### `system_logs/system_state.json`
 
-### `log_shutdown.py`
+`system_state.json` stores the latest known system lifecycle information, for example the latest boot and shutdown details.
 
-Small entry point used when Linux shuts down or reboots. It records the shutdown through `system_logger.py`.
+The dashboard uses it to show system-state information without having to reconstruct it from the full event log every time.
 
-### `ups_status.json`
+### `system_logs/log_shutdown.py`
 
-Live UPS state.
+`log_shutdown.py` is a small script that is called during operating-system shutdown or reboot.
 
-Written by:
+Its job is to pass the shutdown event to `system_logger.py`.
+
+It is used by the shutdown systemd service.
+
+### `system_logs/ups_status.json`
+
+`ups_status.json` contains the latest UPS reading.
+
+It is written by:
 
 ```text
 hardware/ups_monitor.py
 ```
 
-Read by:
+and read by:
 
 ```text
 dashboard.py
 ```
 
-### `ups_history.json`
+The file typically contains battery percentage, voltage, warning state and update time.
 
-Stores information about the most recent UPS-triggered shutdown.
+### `system_logs/ups_history.json`
 
-Written by `hardware/ups_monitor.py` and read by `dashboard.py`.
+`ups_history.json` stores information about the most recent UPS-triggered shutdown.
+
+This makes the last critical battery event available after the Raspberry Pi starts again.
+
+It is written by `hardware/ups_monitor.py` and read by `dashboard.py`.
 
 ---
 
-## 9. `github/`
+## 7. `github/`
+
+The `github/` folder contains the automatic data-backup code.
+
+The main file is:
 
 ```text
-github/
-├── __init__.py
-└── github_backup.py
+github/github_backup.py
 ```
 
-### `github_backup.py`
+This backup is separate from the normal source-code repository.
 
-Creates the automatic data backup.
+Its purpose is to save the measurement results and system event history regularly, even during a long-running experiment.
 
-The script backs up only:
+The script copies:
 
 ```text
 data/
 system_logs/system_events.csv
 ```
 
-It copies these into the separate local Git repository:
+into a separate local Git repository:
 
 ```text
 /home/valvescontroller/Desktop/gasmonitor-data-backup
 ```
 
-The backup repository is separate from the source-code repository on purpose.
+The separate repository is then committed and pushed to GitHub.
 
-Typical backup sequence:
+Only these selected data files are included in this automatic backup. Runtime status JSON files, Python source files and settings are not part of this scheduled data backup.
 
-```text
-copy selected project data
-        ↓
-git add
-        ↓
-check whether anything changed
-        ↓
-commit if needed
-        ↓
-git push origin main
-```
+If nothing has changed since the previous backup, the script does not create an unnecessary new commit.
 
-If no data changed, no unnecessary commit is created.
+The backup script is normally started by `gasmonitor-github-backup.service`. A systemd timer starts that service at the scheduled times.
 
 ---
 
-## 10. `services/` and systemd
+## 8. `services/` and systemd
 
-```text
-services/
-├── __init__.py
-├── service_controller.py
-└── gasmonitor.service
-```
+The `services/` folder contains code and reference files related to Linux service control.
 
-### What is systemd?
+The important idea is that the main programs are not normally kept running from open terminal windows. Raspberry Pi OS uses `systemd` to manage them.
 
-`systemd` is the Linux service manager used by Raspberry Pi OS.
+A systemd service describes which program should be started, which working directory should be used, which Python interpreter should run it and what Linux should do if the process stops.
 
-It starts, stops and monitors background programs. The project uses it so important processes do not depend on an open terminal window.
-
-The active installed service files are normally stored under:
+The active service definitions are installed under:
 
 ```text
 /etc/systemd/system/
 ```
 
-### `service_controller.py`
+The copy of `gasmonitor.service` inside the project is a project/reference copy. Editing that file alone does not automatically change the installed service unless the installed service is updated as well.
 
-Used by:
+### `services/service_controller.py`
 
-```text
-dashboard.py
-```
+This file is used by `dashboard.py`.
 
-Provides functions such as:
+It contains the functions that send start, stop and restart commands to `gasmonitor.service`. It also checks whether the service is currently active.
 
-```text
-start_service()
-stop_service()
-restart_service()
-is_service_active()
-```
-
-It controls:
-
-```text
-gasmonitor.service
-```
+This is what allows the dashboard to show either START or STOP depending on the current state.
 
 ### `gasmonitor.service`
 
-Purpose:
+`gasmonitor.service` is the service responsible for running `main.py`.
 
-```text
-launch main.py as the managed measurement process
-```
+It is useful to think of it as the Linux wrapper around the measurement program.
 
-The service is not the measurement code itself. It tells Linux which working directory, Python environment and Python file to run.
+When the dashboard starts the service, Linux starts `main.py` using the configured project directory and Python virtual environment.
 
-The measurement service is not intended to start automatically after every reboot. The operator starts measurement from the dashboard.
+When the dashboard stops the service, Linux sends the stop request to the measurement process so that cleanup can run.
+
+The measurement service is intentionally not started automatically after every reboot. A measurement is started manually from the dashboard.
 
 ### `gasmonitor-dashboard.service`
 
-Runs `dashboard.py` through Streamlit and starts automatically so the dashboard becomes available after boot.
+This service runs the Streamlit dashboard.
+
+Unlike the measurement service, it is intended to start automatically after boot so that the web interface becomes available without opening a terminal.
 
 ### `ups-monitor.service`
 
-Runs:
+This service runs `hardware/ups_monitor.py`.
 
-```text
-python -m hardware.ups_monitor
-```
-
-It stays active independently from measurement.
+It stays active in the background and monitors the battery whether a measurement is running or not.
 
 ### `gasmonitor-github-backup.service`
 
-Runs one execution of:
+This service runs one execution of `github/github_backup.py`.
 
-```text
-python -m github.github_backup
-```
-
-and exits when the backup is complete.
+It starts, performs the backup and exits.
 
 ### `gasmonitor-github-backup.timer`
 
-Schedules the backup service.
+This timer starts the backup service automatically.
 
-Current intended schedule:
+The current schedule is:
 
 ```text
 06:30
 18:30
 ```
 
-with:
-
-```text
-Persistent=true
-```
+`Persistent=true` means that if a scheduled backup was missed because the Raspberry Pi was off, systemd can run the missed job after the system starts again.
 
 ### `system-event-boot.service`
 
-Records a boot event.
+This service records a boot event.
 
 ### `system-event-shutdown.service`
 
-Records operating-system shutdown/reboot information.
+This service records an operating-system shutdown or reboot.
 
 ---
 
-## 11. `data/`
+## 9. `data/`
 
-The `data/` directory contains measurement CSV files.
+The `data/` folder contains the recorded measurement files.
 
-Example:
+The files are grouped into folders by date.
+
+For example:
 
 ```text
 data/
@@ -835,207 +478,200 @@ data/
     └── 2026-08-18_07-02-44.csv
 ```
 
-Files are created by:
+These files are created by `csv_data/csv_storage.py`.
 
-```text
-csv_data/csv_storage.py
-```
+The dashboard reads them for data downloads, and the GitHub backup script copies them into the separate data-backup repository.
 
-Used by:
-
-```text
-dashboard.py
-github/github_backup.py
-```
-
-This directory should be treated as measurement data storage, not as general project storage.
+This folder should only be used for measurement data. Unrelated CSV files or test files can otherwise appear in dashboard downloads or backups.
 
 ---
 
-## 12. External libraries
+## 10. External libraries
+
+Two folders contain code that did not originate as part of the main project structure.
 
 ### `drager_xam_8000/`
 
-External library for communication with the Dräger X-am 8000.
+This folder contains the Dräger communication library.
 
-Project integration path:
+The project uses it through:
 
 ```text
-main.py
-   ↓
 hardware/drager_control.py
-   ↓
-drager_xam_8000/
 ```
 
-The external library should generally remain intact.
+This means most project code does not depend directly on the internal layout of the external library.
+
+The folder should generally be kept intact so that the external code remains recognizable and easier to update or debug.
 
 ### `h2s-rpi/`
 
-External package for the Mzuzu H₂S sensor.
+This folder contains the external reader package for the Mzuzu H₂S sensor.
 
-Project integration path:
+The project uses it through:
 
 ```text
-main.py
-   ↓
 hardware/h2s_control.py
-   ↓
-h2s-rpi/
 ```
 
-Expected I²C devices:
+A standalone sensor self-test can be run with:
+
+```bash
+python -m h2s_reader --selftest
+```
+
+The expected I²C addresses are:
 
 ```text
 0x48  LMP91002
 0x49  ADS1115
 ```
 
-Standalone self-test:
-
-```bash
-python -m h2s_reader --selftest
-```
+Calibration values and sensor-specific settings remain part of this external package.
 
 ---
 
-## 13. Measurement flow
+## 11. How a measurement run works
 
-A full cycle can be summarized as:
+A measurement starts when the user presses START in the dashboard.
 
-```text
-Load configuration
-       ↓
-Initialize hardware
-       ↓
-Start pump
-       ↓
-Measurement Valve 1
-       ↓
-Valve 6 flush
-       ↓
-Measurement Valve 2
-       ↓
-Valve 6 flush
-       ↓
-...
-       ↓
-Measurement Valve 5
-       ↓
-Valve 6 flush
-       ↓
-Next cycle
-```
+The dashboard asks `services/service_controller.py` to start `gasmonitor.service`. The service then starts `main.py`.
 
-During every active valve period:
+`main.py` loads the current configuration and prepares the valve controller, Dräger interface, H₂S interface, CSV storage and status storage.
 
-```text
-Dräger reading
-       +
-Mzuzu H₂S reading
-       ↓
-combined measurement
-       ↓
-CSVStorage
-       ↓
-data/YYYY-MM-DD/*.csv
-```
+The Dräger pump is started first. The program waits for the configured startup delay before opening the first measurement valve.
 
-The latest values are also written into `status.json` for the dashboard.
+During a valve measurement, the program repeatedly reads the Dräger and the additional H₂S sensor. The values are combined into one measurement row and written to CSV. The most recent values are also written to `status.json` so they can be displayed in the dashboard.
+
+When the configured time for that valve is finished, the valve is closed.
+
+Valve 6 is then opened for flushing. The system continues to read and store measurements during this step. This is useful because the recorded values show whether the sample line is actually returning toward fresh-air conditions.
+
+After flushing, Valve 6 is closed and the next measurement valve is opened.
+
+Once all configured valves have been measured, the process either stops or begins another cycle, depending on the configuration.
+
+When STOP is pressed in the dashboard, `gasmonitor.service` is stopped. `main.py` then performs its cleanup before exiting.
 
 ---
 
-## 14. Live status and file exchange
+## 12. How the dashboard gets its information
 
-The dashboard and measurement process are separate programs.
+The dashboard and the measurement program are separate processes. They do not exchange live values by directly calling each other's Python functions.
 
-They exchange information through files rather than direct function calls.
+Instead, the project uses small status files.
 
-### Measurement status
+While `main.py` is running, it updates `system_logs/status.json`. The dashboard reads that file and displays the latest values.
+
+The UPS monitor works in the same way. `hardware/ups_monitor.py` updates `system_logs/ups_status.json`, and the dashboard reads it.
+
+Recorded measurement history is different. It is stored permanently as CSV files under `data/`, and the dashboard reads those files when the user opens the download section.
+
+This file-based approach keeps the components independent. For example, the dashboard can be restarted without stopping an active measurement, because `main.py` does not depend on the dashboard process.
+
+---
+
+## 13. Battery monitoring and safe shutdown
+
+The UPS monitor runs separately from `main.py`.
+
+This is important because battery protection must still work when the measurement system is idle or when the dashboard has a problem.
+
+`hardware/ups_monitor.py` reads the battery percentage and voltage through `hardware/ups_control.py`.
+
+The current values are written to `system_logs/ups_status.json`.
+
+If the battery becomes low, a warning state is recorded. If it reaches the critical shutdown threshold for several consecutive readings, the monitor begins the shutdown sequence.
+
+It first stops `gasmonitor.service`. This allows `main.py` to close the valves, stop the Dräger pump and finish writing files.
+
+The UPS monitor then waits for the measurement service to stop. After that it stores the shutdown information in `ups_history.json`, writes an event to the system event log and requests operating-system poweroff.
+
+This order is important because turning the Raspberry Pi off immediately could leave a valve open or interrupt a CSV write.
+
+---
+
+## 14. Automatic GitHub backup
+
+The automatic backup is meant for measurement data rather than the full source-code project.
+
+The backup script copies the complete `data/` folder and `system_logs/system_events.csv` into the separate repository at:
 
 ```text
-main.py
-   ↓
-status_storage.py
-   ↓
-status.json
-   ↓
-dashboard.py
+/home/valvescontroller/Desktop/gasmonitor-data-backup
 ```
 
-### UPS status
+It then checks whether anything has changed.
 
-```text
-ups_monitor.py
-   ↓
-ups_status.json
-   ↓
-dashboard.py
-```
+If new or changed data exists, it creates a commit and pushes it to GitHub.
 
-This approach keeps the dashboard independent from the hardware process. If the dashboard is restarted, the measurement process can continue running.
+The scheduled service runs twice per day at 06:30 and 18:30.
+
+Because measurement CSV files are written continuously, an experiment does not need to be stopped before the next backup. The next scheduled backup can copy data that has already been written to disk.
 
 ---
 
 ## 15. Useful commands
 
-### Check measurement service
+### Check whether measurement is running
 
 ```bash
 sudo systemctl status gasmonitor --no-pager
 ```
 
-Purpose: check whether the measurement process is active.
+This shows the state of `gasmonitor.service`.
 
-Expected while running:
+During a measurement, the important line should contain:
 
 ```text
 Active: active (running)
 ```
 
-Expected while stopped:
+When no measurement is running, it should normally show:
 
 ```text
 Active: inactive (dead)
 ```
 
-### View measurement logs
+### View recent measurement logs
 
 ```bash
 sudo journalctl -u gasmonitor -n 100 --no-pager
 ```
 
-Purpose: show the most recent 100 log lines from the measurement service.
+This prints the most recent 100 log lines from the measurement service.
 
-Use this after an unexpected stop or sensor error.
+Use it if the measurement stops unexpectedly or if a hardware error appears.
 
-### Check dashboard service
+### Check the dashboard service
 
 ```bash
 sudo systemctl status gasmonitor-dashboard --no-pager
 ```
 
-Expected:
+The expected normal state is:
 
 ```text
 Active: active (running)
 ```
 
-### Restart dashboard
+### Restart the dashboard
 
 ```bash
 sudo systemctl restart gasmonitor-dashboard
 ```
 
-Use this after changing dashboard code or if Streamlit stops responding.
+Use this after changing `dashboard.py` or if the Streamlit page stops responding.
 
-### Check UPS monitor
+Restarting the dashboard does not normally require stopping the measurement service.
+
+### Check the UPS monitor
 
 ```bash
 sudo systemctl status ups-monitor --no-pager
 ```
 
-Expected:
+The normal state is:
 
 ```text
 Active: active (running)
@@ -1047,17 +683,17 @@ Active: active (running)
 sudo journalctl -u ups-monitor -n 100 --no-pager
 ```
 
-Use this to inspect battery readings or shutdown decisions.
+This shows recent battery readings, warning messages and shutdown decisions.
 
-### Check GitHub backup timer
+### Check the GitHub backup timer
 
 ```bash
 systemctl list-timers --all | grep gasmonitor-github
 ```
 
-Expected: a line containing `gasmonitor-github-backup.timer` and the next scheduled run.
+The output should contain `gasmonitor-github-backup.timer` together with the next scheduled execution time.
 
-### Manual GitHub data backup
+### Run the GitHub backup manually
 
 ```bash
 cd ~/Desktop/Drager_XAM8000_valves
@@ -1065,14 +701,14 @@ source .venv/bin/activate
 python3 -m github.github_backup
 ```
 
-Possible normal output:
+If nothing changed, a normal result is similar to:
 
 ```text
 Preparing GitHub data backup...
 No new data to push.
 ```
 
-or a successful commit/push message.
+If new data exists, the script should commit and push it.
 
 ### Check I²C devices
 
@@ -1080,40 +716,48 @@ or a successful commit/push message.
 i2cdetect -y 1
 ```
 
-Expected:
+The expected addresses are:
 
 ```text
-0x36
-0x48
-0x49
+0x36  X1205 UPS
+0x48  LMP91002
+0x49  ADS1115
 ```
 
 ---
 
-## 16. Development checks
+## 16. Checks after changing the code
 
-These checks are useful after code is edited or files are moved. They are not required during normal system operation.
+These checks are mainly useful after files are edited, renamed or moved.
 
-### Syntax check
+They are not part of normal measurement operation.
+
+### Check Python syntax
+
+From the project folder:
 
 ```bash
 cd ~/Desktop/Drager_XAM8000_valves
 source .venv/bin/activate
 
-python3 -m py_compile main.py dashboard.py hardware/*.py csv_data/*.py settings/*.py system_logs/*.py github/*.py services/*.py
+python3 -m py_compile \
+main.py \
+dashboard.py \
+hardware/*.py \
+csv_data/*.py \
+settings/*.py \
+system_logs/*.py \
+github/*.py \
+services/*.py
 ```
 
-Purpose: check Python syntax without starting measurement.
+This checks whether Python can compile the files.
 
-Expected result:
+If everything is correct, the command normally produces no output.
 
-```text
-no output
-```
+If there is a syntax problem, Python prints the file and line where the error was found.
 
-No output means the syntax check passed.
-
-### Import check
+### Check imports
 
 ```bash
 python3 -c "
@@ -1129,13 +773,15 @@ print('All imports OK')
 "
 ```
 
-Purpose: check that package paths and imports still work after files are reorganized.
+This is useful after reorganizing folders.
 
-Expected:
+The expected result is:
 
 ```text
 All imports OK
 ```
+
+If `ModuleNotFoundError` or `ImportError` appears, one of the Python import paths is no longer correct.
 
 ---
 
@@ -1143,21 +789,21 @@ All imports OK
 
 ### `Remote I/O error 121`
 
-Example:
+A typical message is:
 
 ```text
 OSError: [Errno 121] Remote I/O error
 ```
 
-This normally means an I²C device is not responding.
+In this project, this usually means that one of the I²C devices is no longer responding.
 
-Run:
+The first check should be:
 
 ```bash
 i2cdetect -y 1
 ```
 
-Expected:
+Normally the scan should show:
 
 ```text
 0x36  X1205
@@ -1165,7 +811,9 @@ Expected:
 0x49  ADS1115
 ```
 
-If `0x48` and `0x49` are missing, check the cables between the H₂S sensor and the Raspberry Pi:
+If `0x48` and `0x49` are missing, check the physical connection between the H₂S sensor and the Raspberry Pi.
+
+The relevant wires are:
 
 ```text
 5 V
@@ -1174,27 +822,29 @@ SDA
 SCL
 ```
 
-In this system, Error 121 has normally appeared when one of the H₂S sensor wires became loose or fell out of the connector.
+In this setup, Error 121 has normally happened when one of these sensor wires became loose or fell out of the connector.
 
-Reconnect the cables firmly and run `i2cdetect -y 1` again. Only restart measurement once `0x48` and `0x49` are visible.
+Push all connections in firmly and run `i2cdetect -y 1` again.
+
+The measurement should only be restarted once `0x48` and `0x49` are visible again.
 
 ### Dräger is not found
 
-Check:
+First check whether the USB adapter is visible:
 
 ```bash
 lsusb
 ```
 
-Then:
+Then check whether a serial device exists:
 
 ```bash
 ls /dev/ttyUSB*
 ```
 
-The Dräger DIRA adapter must be available before `main.py` can communicate with the detector.
+The Dräger DIRA adapter must be available before the measurement program can connect to the Dräger.
 
-If the USB device appears but `/dev/ttyUSB0` is missing, check the USB serial driver/device mapping.
+If the USB device appears in `lsusb` but `/dev/ttyUSB0` is missing, the USB serial driver or device mapping should be checked.
 
 ### Measurement stops unexpectedly
 
@@ -1204,7 +854,15 @@ Run:
 sudo journalctl -u gasmonitor -n 100 --no-pager
 ```
 
-The final lines usually show whether the failure came from Dräger communication, H₂S I²C communication, valve control or Python code.
+The final log lines usually show where the failure occurred.
+
+Typical causes include:
+
+- H₂S I²C communication,
+- Dräger communication,
+- a disconnected cable,
+- a Python exception,
+- another hardware communication problem.
 
 ### Dashboard does not load
 
@@ -1214,110 +872,30 @@ Check:
 sudo systemctl status gasmonitor-dashboard --no-pager
 ```
 
-Then:
+If the service is not running, inspect the recent log:
 
 ```bash
 sudo journalctl -u gasmonitor-dashboard -n 100 --no-pager
 ```
 
-### UPS status does not update
+### UPS status is not updating
 
-Check:
+Check the service:
 
 ```bash
 sudo systemctl status ups-monitor --no-pager
 ```
 
-Then:
+Then inspect its log:
 
 ```bash
 sudo journalctl -u ups-monitor -n 100 --no-pager
 ```
 
-Also inspect:
+The latest status file can also be viewed with:
 
 ```bash
 cat ~/Desktop/Drager_XAM8000_valves/system_logs/ups_status.json
 ```
 
-The update timestamp should change regularly.
-
----
-
-## 18. Safe shutdown behaviour
-
-Safe shutdown is important because the Raspberry Pi controls physical valves and writes measurement data continuously.
-
-### Normal measurement stop
-
-When `main.py` exits, it should:
-
-1. close all valves,
-2. stop the Dräger pump,
-3. disconnect from the Dräger,
-4. disconnect the additional H₂S sensor,
-5. close the CSV file,
-6. update live status.
-
-### Critical UPS battery
-
-When the battery reaches the shutdown threshold:
-
-```text
-ups_monitor.py
-       ↓
-stop gasmonitor.service
-       ↓
-wait for main.py cleanup
-       ↓
-save UPS history
-       ↓
-write shutdown event
-       ↓
-systemctl poweroff
-```
-
-The UPS monitor and measurement process are separate so the battery can still be supervised even when no measurement is active.
-
----
-
-## 19. Notes for future changes
-
-Keep the following separation where possible:
-
-```text
-dashboard.py
-    user interface
-
-main.py
-    measurement sequence
-
-hardware/
-    hardware-specific code
-
-csv_data/
-    measurement storage
-
-settings/
-    configuration handling
-
-system_logs/
-    live state and event history
-
-github/
-    external data backup
-
-services/
-    process control
-```
-
-If files are moved, check both Python import paths and installed systemd `ExecStart` / `ExecStop` paths.
-
-The external folders:
-
-```text
-drager_xam_8000/
-h2s-rpi/
-```
-
-should generally remain recognizable as external codebases rather than being reorganized together with the project-specific modules.
+The update timestamp should change regularly while `ups-monitor.service` is running.
