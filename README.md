@@ -5,22 +5,22 @@
 - [1. Project overview](#1-project-overview)
 - [2. Project structure](#2-project-structure)
 - [3. main.py — measurement engine](#3-mainpy--measurement-engine)
-- [Hardware](#hardware)
-- [CSV data](#csv_data)
-- [Settings](#settings)
-- [System logs](#system_logs)
-- [GitHub backup](#github)
-- [Services](#services)
-- [Data storage](#data)
-- [Dräger X-am library](#drager_xam_8000)
-- [H₂S sensor library](#h2s-rpi)
-- [Streamlit config](#streamlit)
+- [4. dashboard.py - operator interface](#dashboard)
+- [5. Measurement cycle](#measurement-cycle)
+- [6. Data storage](#data storage)
+- [7. Settings](#settings)
+- [8. Logs and runtime status](#logs-runtime)
+- [9. GitHub Backup](#services)
+- [10. Systemd services ](#systemd services)
+- [11. Useful commands](#useful commands)
+- [12. Development checks](#development-checks)
+- [13. Troubleshooting](#troubleshooting)
 
 ## 1. Project overview
 
 This project is a Raspberry Pi 5 based gas-monitoring and valve-control system.
 
-The system automatically measures gas from several sampling lines. A six-channel relay board opens and closes the valves that select the active gas line. A Dräger X-am 8000 measures the main gas components, while an additional Mzuzu H₂S sensor provides a second H₂S measurement.
+The system automatically measures gas from several sampling lines. A six-channel relay board opens and closes the valves that select the active gas line. A Dräger X-am 8000 measures the main gas components, while an additional Mzuzu H₂S sensor provides a second higher resolution H₂S measurement.
 
 The Raspberry Pi stores all measurements locally as CSV files. A web dashboard is used to start and stop measurements, view live values, change measurement settings, download recorded data, and check battery and system information.
 
@@ -790,7 +790,7 @@ The backup is scheduled every 12 hours.
 
 ---
 
-## 10. What are the systemd services?
+## 10. systemd services
 
 `systemd` is the Linux service manager used by Raspberry Pi OS.
 
