@@ -1,7 +1,4 @@
-
-import json
 import time
-from pathlib import Path
 
 from hardware.valves import ValveController
 from hardware.drager_control import DragerController
@@ -17,22 +14,6 @@ from settings.config_storage import (
     load_config,
 )
 
-
-CONFIG_PATH = (
-    Path(__file__).parent
-    / "config.json"
-)
-
-
-def load_config():
-    with open(
-        CONFIG_PATH,
-        "r",
-        encoding="utf-8",
-    ) as config_file:
-        return json.load(
-            config_file
-        )
 
 
 def read_all_sensors(
